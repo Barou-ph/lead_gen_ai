@@ -13,11 +13,13 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # ══════════════════════════════════════════════════════════════════════
 #  CONFIG
 # ══════════════════════════════════════════════════════════════════════
-TARGET_LEADS = 50
+TARGET_LEADS = 100
 MAX_RETRIES = 3
 RETRY_DELAY = 3
 
+# ── 30 queries đa dạng để đủ pool ─────────────────────────────────────
 QUERIES = [
+    # English
     "software company vietnam",
     "it outsourcing vietnam",
     "web development company vietnam",
@@ -28,11 +30,27 @@ QUERIES = [
     "ai company vietnam",
     "it service company ho chi minh",
     "software outsourcing hanoi",
-    "cong ty phan mem viet nam",
-    "cong ty cong nghe ho chi minh",
     "outsourcing company vietnam",
     "software development firm vietnam",
     "app development company ho chi minh",
+    "software house vietnam",
+    "it consulting firm vietnam",
+    "ecommerce development vietnam",
+    "react developer company vietnam",
+    "nodejs company vietnam",
+    "python development company vietnam",
+    "cloud services company vietnam",
+    # Vietnamese (không dấu)
+    "cong ty phan mem viet nam",
+    "cong ty cong nghe ho chi minh",
+    "cong ty lap trinh ha noi",
+    "cong ty thiet ke web viet nam",
+    "cong ty phat trien ung dung di dong",
+    "cong ty outsourcing viet nam",
+    "cong ty digital marketing viet nam",
+    "cong ty ai viet nam",
+    "cong ty saas viet nam",
+    "startup cong nghe viet nam",
 ]
 
 UA_POOL = [
@@ -40,18 +58,32 @@ UA_POOL = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/121.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148",
 ]
 
+# Domain rác hoàn toàn loại bỏ
 BAD_DOMAINS = [
+    # Search engines → redirect link
     "bing.com",
     "google.com",
     "yahoo.com",
+    "duckduckgo.com",
+    # Social / job
     "linkedin",
     "facebook",
     "twitter",
     "youtube",
     "instagram",
     "tiktok",
+    "itviec",
+    "vietnamworks",
+    "topcv",
+    "jobstreet",
+    "recruit.net",
+    "wellfound.com",
+    "thesaasjobs",
+    "10times.com",
+    # Directories (không phải company thật)
     "techbehemoths",
     "goodfirms",
     "clutch",
@@ -62,6 +94,15 @@ BAD_DOMAINS = [
     "bark.com",
     "yelp",
     "yello",
+    "appdevelopmentcompanies.co",
+    "topsoftwarecompanies.co",
+    "softwarecompanynetwork",
+    "globalsoftwarecompanies",
+    "bestarion.com",
+    "topon.tech",
+    "ensun.io",
+    "techvify.com",
+    # Info / news / blog
     "zoominfo",
     "crunchbase",
     "wikipedia",
@@ -70,20 +111,46 @@ BAD_DOMAINS = [
     "medium.com",
     "blogspot",
     "wordpress.com",
-    "microsoft",
-    "amazon",
-    "apple.com",
+    "vietcetera",
+    "forbes.com",
+    "techcollectivesea",
+    "thegradient.pub",
+    "investasian",
+    "hkbav",
+    "bizasean",
+    "aseantechsec",
+    "theinfostride",
+    "vietnamdoneright",
+    "vietnamoutsource.com",
+    "bocasay.com",
+    "pixelake.com",
+    "outsourced.co",
+    "joomlavi.com",
+    # Irrelevant
     "zhihu",
     "baidu",
     "mobile01",
-    "recruit.net",
     "juraforum",
     "wirtschaftsforum",
     "digitalspy",
     "smergers",
-    "hkbav",
     "vtudin",
     "ciovietnam",
+    "stackexchange",
+    "stackoverflow",
+    "math.stackexchange",
+    "microsoft",
+    "amazon.com",
+    "apple.com",
+    "ibm.com",
+    "52wmb",
+    "soopage",
+    "tradebrio.com",
+    "jcsearch",
+    "qblends.com",
+    "offshoredevelopmentteam.com",
+    "golftipsandvideos",
+    "vastvietnam.org",
 ]
 
 BAD_PATHS = [
@@ -103,6 +170,14 @@ BAD_PATHS = [
     "/topic/",
     "/forum",
     "/answer/",
+    "/jobs/",
+    "/company/",
+    "/companies/",
+    "/agencies/",
+    "/developers/",
+    "/location/",
+    "/local-agencies/",
+    "/software-development-companies",  # directory page của techvify etc.
 ]
 
 
@@ -120,26 +195,24 @@ def get_headers():
 
 
 def resolve_bing_url(url: str) -> str:
-    """Giải mã Bing redirect (bing.com/ck/a?...) → URL thật."""
-    if "bing.com/ck/a" not in url:
+    """Decode Bing redirect URL (bing.com/ck/a?) → URL thật."""
+    if "bing.com" not in url:
         return url
-    # Thử decode param u=a1<base64>
     match = re.search(r"[?&]u=([^&]+)", url)
     if match:
         encoded = match.group(1)
         if encoded.startswith("a1"):
             encoded = encoded[2:]
-        # Thêm padding
         padding = 4 - len(encoded) % 4
         if padding != 4:
             encoded += "=" * padding
         try:
             decoded = base64.urlsafe_b64decode(encoded).decode("utf-8", errors="ignore")
-            if decoded.startswith("http"):
+            if decoded.startswith("http") and "bing.com" not in decoded:
                 return decoded
         except Exception:
             pass
-    # Fallback: follow HTTP redirect
+    # fallback: follow redirect
     try:
         r = requests.head(
             url, headers=get_headers(), timeout=5, allow_redirects=True, verify=False
@@ -148,24 +221,45 @@ def resolve_bing_url(url: str) -> str:
             return r.url
     except Exception:
         pass
-    return ""  # trả "" nếu không giải được → sẽ bị lọc bởi is_clean_link
+    return ""
 
 
-def is_clean_link(link: str) -> bool:
+def get_root_domain(url: str) -> str:
+    """Lấy root domain (ví dụ: https://sub.example.com/page → example.com)."""
+    try:
+        parts = url.split("//")[-1].split("/")[0].split(".")
+        if len(parts) >= 2:
+            return ".".join(parts[-2:])
+    except Exception:
+        pass
+    return url
+
+
+def is_clean_link(link: str, seen_domains: set) -> bool:
+    """Lọc link rác + giới hạn 3 link/domain."""
     if not link or not link.startswith("http"):
         return False
     low = link.lower()
+
+    # Bing redirect chưa được decode
+    if "bing.com/ck/a" in low:
+        return False
+
     if any(b in low for b in BAD_DOMAINS):
         return False
     if any(k in low for k in BAD_PATHS):
         return False
+
+    # Giới hạn 3 URL cùng domain (tránh crawl 10 page của cùng 1 site)
+    root = get_root_domain(link)
+    count = sum(1 for d in seen_domains if d == root)
+    if count >= 3:
+        return False
+
     return True
 
 
-def fetch_with_retry(
-    url: str, method: str = "GET", data: dict = None
-) -> requests.Response | None:
-    """GET hoặc POST với retry + exponential backoff."""
+def fetch_with_retry(url: str, method: str = "GET", data: dict = None):
     for attempt in range(MAX_RETRIES):
         try:
             if method == "POST":
@@ -180,12 +274,11 @@ def fetch_with_retry(
                     verify=False,
                     allow_redirects=True,
                 )
-
             if r.status_code == 200:
                 return r
             if r.status_code in (429, 503):
                 wait = RETRY_DELAY * (2**attempt)
-                print(f"    ⏳ HTTP {r.status_code} — retry sau {wait}s...")
+                print(f"    ⏳ HTTP {r.status_code} — chờ {wait}s...")
                 time.sleep(wait)
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
             if attempt < MAX_RETRIES - 1:
@@ -198,7 +291,7 @@ def fetch_with_retry(
 # ══════════════════════════════════════════════════════════════════════
 #  SEARCH ENGINES
 # ══════════════════════════════════════════════════════════════════════
-def search_bing(query: str, pages: int = 2) -> list:
+def search_bing(query: str, pages: int = 3) -> list:
     links = []
     for page in range(pages):
         url = (
@@ -211,9 +304,9 @@ def search_bing(query: str, pages: int = 2) -> list:
         soup = BeautifulSoup(r.text, "html.parser")
         for h2 in soup.select("li.b_algo h2 a"):
             href = h2.get("href", "")
-            if "bing.com/ck" in href:
+            if "bing.com" in href:
                 href = resolve_bing_url(href)
-            if href.startswith("http"):
+            if href and href.startswith("http") and "bing.com" not in href:
                 links.append(href)
         time.sleep(random.uniform(2.0, 3.5))
     return links
@@ -234,40 +327,51 @@ def search_ddg(query: str) -> list:
     return links
 
 
-def search_mojeek(query: str) -> list:
+def search_mojeek(query: str, pages: int = 2) -> list:
     links = []
-    url = f"https://www.mojeek.com/search?q={requests.utils.quote(query)}"
-    r = fetch_with_retry(url)
-    if r:
-        soup = BeautifulSoup(r.text, "html.parser")
-        for a in soup.select("ul.results-standard li a.ob"):
-            href = a.get("href", "")
-            if href.startswith("http"):
-                links.append(href)
-    time.sleep(random.uniform(2.0, 3.5))
+    for page in range(pages):
+        url = (
+            f"https://www.mojeek.com/search"
+            f"?q={requests.utils.quote(query)}&s={page*10}"
+        )
+        r = fetch_with_retry(url)
+        if r:
+            soup = BeautifulSoup(r.text, "html.parser")
+            for a in soup.select("ul.results-standard li a.ob"):
+                href = a.get("href", "")
+                if href.startswith("http"):
+                    links.append(href)
+        time.sleep(random.uniform(2.0, 3.0))
     return links
 
 
-def search_all_engines(query: str) -> list:
+def search_all_engines(query: str, seen_domains: set) -> list:
     all_links = []
 
     print(f"    🔎 Bing...", end=" ", flush=True)
-    bing = search_bing(query, pages=2)
-    print(f"{len(bing)} links")
+    bing = search_bing(query, pages=3)
+    print(f"{len(bing)} links", end=" | ", flush=True)
     all_links.extend(bing)
 
     if len(bing) < 5:
-        print(f"    🔎 DDG...", end=" ", flush=True)
+        print(f"DDG...", end=" ", flush=True)
         ddg = search_ddg(query)
-        print(f"{len(ddg)} links")
+        print(f"{len(ddg)}", end=" | ", flush=True)
         all_links.extend(ddg)
 
-        print(f"    🔎 Mojeek...", end=" ", flush=True)
-        moj = search_mojeek(query)
-        print(f"{len(moj)} links")
+        print(f"Mojeek...", end=" ", flush=True)
+        moj = search_mojeek(query, pages=2)
+        print(f"{len(moj)}", end="", flush=True)
         all_links.extend(moj)
+    print()
 
-    clean = [l for l in all_links if is_clean_link(l)]
+    clean = []
+    for l in all_links:
+        if is_clean_link(l, seen_domains):
+            root = get_root_domain(l)
+            seen_domains.add(root)
+            clean.append(l)
+
     return list(set(clean))
 
 
@@ -279,6 +383,7 @@ EMAIL_SCORES = {
     "founder": 10,
     "director": 9,
     "cto": 9,
+    "coo": 9,
     "head": 8,
     "sales": 8,
     "bd": 8,
@@ -318,12 +423,12 @@ def rank_emails(emails: list) -> list:
 def email_quality_label(email: str) -> str:
     s = score_email(email)
     if s >= 8:
-        return "🔥 Decision Maker"
+        return "Decision Maker"
     if s >= 5:
-        return "✅ Good"
+        return "Good"
     if s >= 2:
-        return "🔵 Generic"
-    return "⚫ Low"
+        return "Generic"
+    return "Low"
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -343,15 +448,15 @@ def score_lead(data: dict) -> dict:
     tags = []
 
     emails = [e for e in data.get("emails", "").split(", ") if e]
-    phones = [p for p in data.get("phones", "").split(", ") if p]
+    phones = data.get("phones", "")
     website = data.get("website", "").lower()
     field = data.get("field", "")
 
     if emails:
         best = max(score_email(e) for e in emails)
-        score += best
+        score += max(best, 0)
         if best >= 8:
-            tags.append("Decision Maker Email")
+            tags.append("Decision Maker")
 
     if phones:
         score += 5
@@ -359,7 +464,7 @@ def score_lead(data: dict) -> dict:
 
     if field in HIGH_VALUE_FIELDS:
         score += 5
-        tags.append(f"High-Value: {field}")
+        tags.append(field)
 
     if ".vn" in website:
         score += 3
@@ -395,19 +500,24 @@ def save_visited(link: str):
 if __name__ == "__main__":
     visited = load_visited()
     all_links = []
+    seen_domains = set()
 
-    print(f"🔍 Chạy {len(QUERIES)} queries...\n" + "=" * 60)
+    print(f"🚀 Target: {TARGET_LEADS} leads | {len(QUERIES)} queries\n" + "=" * 60)
 
     for i, query in enumerate(QUERIES):
         print(f'\n[{i+1}/{len(QUERIES)}] "{query}"')
-        results = search_all_engines(query)
+        results = search_all_engines(query, seen_domains)
         new = [l for l in results if l not in visited and l not in all_links]
         all_links.extend(new)
         print(f"  → +{len(new)} mới | Pool: {len(all_links)}")
-        time.sleep(random.uniform(3.0, 6.0))
+        time.sleep(random.uniform(3.0, 5.0))
 
     all_links = list(set(all_links))
-    print(f"\n{'='*60}\n📦 Tổng link sạch: {len(all_links)}\n{'='*60}\n")
+    random.shuffle(all_links)  # shuffle để không bị cluster theo query
+
+    print(f"\n{'='*60}")
+    print(f"📦 Tổng link sạch: {len(all_links)}")
+    print(f"{'='*60}\n")
 
     data = []
 
@@ -438,7 +548,8 @@ if __name__ == "__main__":
             save_visited(link)
 
             print(
-                f"  ✅ Lead #{len(data)} | Grade={scored['grade']} (+{scored['score']}pts) | {field}"
+                f"  ✅ Lead #{len(data)} | Grade={scored['grade']} "
+                f"(+{scored['score']}pts) | {field}"
             )
             print(f"     📧 {ranked[:2]}")
             print(f"     📞 {phones[:2]}")
@@ -447,16 +558,16 @@ if __name__ == "__main__":
         else:
             print("  ❌ No contact")
 
-        time.sleep(random.uniform(1.5, 3.0))
+        time.sleep(random.uniform(1.5, 2.5))
 
-    # Sort grade A → D trước khi export
+    # Sort A → D
     grade_order = {"A": 0, "B": 1, "C": 2, "D": 3}
     data.sort(
         key=lambda x: (grade_order.get(x.get("grade", "D"), 3), -x.get("score", 0))
     )
 
     print(f"\n{'='*60}")
-    print(f"🎯 Tổng lead: {len(data)}")
+    print(f"🎯 Tổng lead: {len(data)}/{TARGET_LEADS}")
     grade_counts = {}
     for d in data:
         g = d.get("grade", "?")
