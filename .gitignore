@@ -2,3 +2,6 @@ echo venv/ >> .gitignore
 echo __pycache__/ >> .gitignore
 echo .env >> .gitignore
 echo *.xlsx >> .gitignore
+
+.env
+
