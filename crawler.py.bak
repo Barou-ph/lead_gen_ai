@@ -111,15 +111,11 @@ def get_masothue_company_urls(keyword, pages=2):
             break
         soup = BeautifulSoup(r.text, "html.parser")
         # Pattern URL: /{10-13 chữ số}-{slug}
-        seen_mst = set()
         for a in soup.select("a[href]"):
             href = a.get("href", "")
             if re.match(r"^/\d{8,13}-", href):
-                # Dedup theo MST (số đầu trong slug)
-                mst = re.match(r"^/(\d{8,13})-", href)
-                if mst and mst.group(1) not in seen_mst:
-                    seen_mst.add(mst.group(1))
-                    full = "https://masothue.com" + href
+                full = "https://masothue.com" + href
+                if full not in company_urls:
                     company_urls.append(full)
         time.sleep(random.uniform(0.8, 1.5))
     return company_urls
@@ -131,12 +127,9 @@ def get_website_from_masothue_page(company_url):
         return ""
     soup = BeautifulSoup(r.text, "html.parser")
     # Website nằm trong <td> hoặc <a> có href bắt đầu http, không phải masothue
-    SKIP = ["masothue.com","google.com","facebook.com","zalo.me",
-             "youtube.com","twitter.com","instagram.com","tiktok.com",
-             "linkedin.com","apple.com","microsoft.com"]
     for a in soup.select("a[href^='http']"):
         href = a.get("href", "")
-        if len(href) > 10 and not any(s in href for s in SKIP):
+        if "masothue.com" not in href and "google.com" not in href and len(href) > 10:
             return href.split("?")[0].rstrip("/")
     return ""
 

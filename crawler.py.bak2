@@ -131,12 +131,9 @@ def get_website_from_masothue_page(company_url):
         return ""
     soup = BeautifulSoup(r.text, "html.parser")
     # Website nằm trong <td> hoặc <a> có href bắt đầu http, không phải masothue
-    SKIP = ["masothue.com","google.com","facebook.com","zalo.me",
-             "youtube.com","twitter.com","instagram.com","tiktok.com",
-             "linkedin.com","apple.com","microsoft.com"]
     for a in soup.select("a[href^='http']"):
         href = a.get("href", "")
-        if len(href) > 10 and not any(s in href for s in SKIP):
+        if "masothue.com" not in href and "google.com" not in href and len(href) > 10:
             return href.split("?")[0].rstrip("/")
     return ""
 
