@@ -1,10 +1,13 @@
 """
-crawler.py v3 — Crawl từ directory VN với selector đã verified.
+crawler.py v4 — Crawl từ yellowpages.vn /lgs/ listing.
 
-Nguồn theo thứ tự ưu tiên:
-  1. masothue.com/Search/?q={keyword} → lấy trang công ty → lấy website
-  2. yellowpages.vn/srch/{keyword}.html → parse listing công ty
-  3. Bing fallback với query không dấu site:.vn
+Flow:
+  1. Vào category page yellowpages theo ngành
+  2. Lấy /lgs/ links → vào từng trang công ty → lấy website thật
+  3. Crawl website → extract email/phone → score → export
+
+Không dùng search engine, không dùng masothue.
+Data từ yellowpages luôn là công ty VN thật, có website, đang hoạt động.
 """
 
 import requests, random, time, re, os, threading, urllib3
@@ -19,7 +22,7 @@ from scorer import score_lead
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 SESSION_TS  = datetime.now().strftime("%Y%m%d_%H%M%S")
-MAX_WORKERS = 8
+MAX_WORKERS = 6
 
 UA_POOL = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
@@ -32,9 +35,10 @@ def hdrs():
         "User-Agent": random.choice(UA_POOL),
         "Accept": "text/html,*/*;q=0.8",
         "Accept-Language": "vi-VN,vi;q=0.9,en;q=0.8",
+        "Referer": "https://www.yellowpages.vn/",
     }
 
-def fetch(url, timeout=10):
+def fetch(url, timeout=12):
     for attempt in range(2):
         try:
             r = requests.get(url, headers=hdrs(), timeout=timeout,
@@ -54,206 +58,193 @@ def get_domain(url):
         return ""
 
 # ══════════════════════════════════════════════════════════════════
-#  KEYWORD MAP — team building pitch → mọi ngành
+#  YELLOWPAGES CATEGORY MAP
+#  Mỗi ngành → list category URL của yellowpages
+#  URL pattern: /class/{cls_id}/{slug}-o_{tinh}.html
+#  Ưu tiên TPHCM + Hà Nội + Bình Dương + Đồng Nai (nhiều công ty nhất)
 # ══════════════════════════════════════════════════════════════════
-INDUSTRY_KEYWORDS = {
+YP_CATEGORIES = {
     "manufacturing": [
-        "san xuat", "nha may", "che bien thuc pham",
-        "det may", "bao bi", "nhua", "co khi",
-    ],
-    "logistics": [
-        "van tai", "logistics", "kho van",
-        "giao nhan", "van chuyen", "xuat nhap khau",
+        "https://www.yellowpages.vn/cls/152060/co-khi----gia-cong-va-che-tao.html",
+        "https://www.yellowpages.vn/cls/111010/do-go-noi-that---san-xuat-va-kinh-doanh.html",
+        "https://www.yellowpages.vn/cls/47910/hoa-chat---san-xuat,-nhap-khau-va-kinh-doanh.html",
+        "https://www.yellowpages.vn/cls/186060/nhua---cac-cong-ty-nhua.html",
+        "https://www.yellowpages.vn/cls/174170/bao-bi---nha-san-xuat-va-kinh-doanh.html",
+        "https://www.yellowpages.vn/cls/225100/thep---cong-ty-thep-(san-xuat,-kinh-doanh).html",
+        "https://www.yellowpages.vn/cls/64610/thuc-pham---san-xuat-va-che-bien.html",
+        "https://www.yellowpages.vn/cls/97160/vai-soi---san-xuat-va-kinh-doanh.html",
     ],
     "hospitality": [
-        "khach san", "nha hang", "du lich",
-        "resort", "lu hanh", "su kien",
+        "https://www.yellowpages.vn/cls/127160/khach-san.html",
+        "https://www.yellowpages.vn/cls/200710/nha-hang.html",
+        "https://www.yellowpages.vn/cls/51810/du-lich---cong-ty-lu-hanh-va-du-lich.html",
+        "https://www.yellowpages.vn/cls/167260/bao-chi.html",
+        "https://www.yellowpages.vn/cls/106010/thuc-pham---cung-cap-thuc-pham,-cong-ty-thuc-pham.html",
+        "https://www.yellowpages.vn/cls/56010/cafe---quan-ca-phe-va-tra-sua.html",
+    ],
+    "logistics": [
+        "https://www.yellowpages.vn/cls/246160/van-tai---cong-ty-van-tai-va-dai-ly-van-tai.html",
+        "https://www.yellowpages.vn/cls/485215/van-tai-duong-bo.html",
+        "https://www.yellowpages.vn/cls/213810/van-tai-bien.html",
+        "https://www.yellowpages.vn/cls/68660/van-tai-container.html",
+        "https://www.yellowpages.vn/cls/130610/giao-nhan-hang-hoa---chuyen-phat.html",
+        "https://www.yellowpages.vn/cls/48310/kho-bai---cho-thue-va-quan-ly-kho.html",
+        "https://www.yellowpages.vn/cls/135510/logistics---cong-ty-logistics.html",
     ],
     "healthcare": [
-        "phong kham", "duoc pham", "y te",
-        "nha khoa", "tham my", "spa",
+        "https://www.yellowpages.vn/cls/180660/duoc-pham---cong-ty-duoc-pham.html",
+        "https://www.yellowpages.vn/cls/152660/y-te---benh-vien-va-co-so-chuyen-khoa.html",
+        "https://www.yellowpages.vn/cls/424960/phong-kham-da-khoa.html",
+        "https://www.yellowpages.vn/cls/77080/phong-kham-nha-khoa.html",
+        "https://www.yellowpages.vn/cls/152560/thiet-bi-y-te---san-xuat,-kinh-doanh.html",
+        "https://www.yellowpages.vn/cls/126660/spa---tham-my-vien.html",
     ],
     "realestate": [
-        "bat dong san", "xay dung", "noi that",
-        "kien truc", "dia oc",
+        "https://www.yellowpages.vn/cls/192550/bat-dong-san---cac-cong-ty-bat-dong-san.html",
+        "https://www.yellowpages.vn/cls/37210/xay-dung---cong-ty-xay-dung.html",
+        "https://www.yellowpages.vn/cls/420940/do-noi-that---thiet-ke-va-san-xuat.html",
+        "https://www.yellowpages.vn/cls/197660/bat-dong-san---quan-ly-va-tu-van-bat-dong-san.html",
+        "https://www.yellowpages.vn/cls/169260/van-phong---cho-thue-van-phong-(tron-goi,-ao,-co---working-space).html",
     ],
     "finance": [
-        "tai chinh", "bao hiem", "ke toan",
-        "kiem toan", "chung khoan",
+        "https://www.yellowpages.vn/cls/131560/bao-hiem---cong-ty-bao-hiem.html",
+        "https://www.yellowpages.vn/cls/10310/ke-toan-va-kiem-toan.html",
+        "https://www.yellowpages.vn/cls/488245/ke-toan-thue---dich-vu-ke-toan-thue.html",
+        "https://www.yellowpages.vn/cls/100310/tai-chinh---cac-cong-ty-tai-chinh.html",
+        "https://www.yellowpages.vn/cls/38760/tu-van-quan-ly-doanh-nghiep.html",
     ],
     "retail": [
-        "ban le", "sieu thi", "thoi trang",
-        "my pham", "phan phoi",
+        "https://www.yellowpages.vn/cls/229210/sieu-thi.html",
+        "https://www.yellowpages.vn/cls/225060/may-mac---quan-ao-thoi-trang.html",
+        "https://www.yellowpages.vn/cls/38760/my-pham---san-xuat-va-kinh-doanh-my-pham.html",
+        "https://www.yellowpages.vn/cls/116010/thuc-pham---san-xuat-va-phan-phoi.html",
+        "https://www.yellowpages.vn/cls/147410/sieu-thi---trung-tam-thuong-mai.html",
     ],
     "education": [
-        "giao duc", "dao tao", "trung tam ngoai ngu",
-        "truong mam non", "ky nang",
+        "https://www.yellowpages.vn/cls/245665/dao-tao---cac-cong-ty-dao-tao.html",
+        "https://www.yellowpages.vn/cls/335515/dao-tao---ngoai-ngu.html",
+        "https://www.yellowpages.vn/cls/487018/trung-tam-dao-tao.html",
+        "https://www.yellowpages.vn/cls/140360/truong-mam-non---truong-mau-giao.html",
+        "https://www.yellowpages.vn/cls/164810/ngoai-ngu---trung-tam-ngoai-ngu.html",
     ],
     "it": [
-        "phan mem", "cong nghe thong tin", "outsourcing",
-        "thiet ke web", "ung dung",
+        "https://www.yellowpages.vn/cls/66030/phan-mem.html",
+        "https://www.yellowpages.vn/cls/226260/cong-nghe-thong-tin---it-services.html",
+        "https://www.yellowpages.vn/cls/166210/thiet-ke-web---cong-ty-thiet-ke-website.html",
+        "https://www.yellowpages.vn/cls/231510/digital-marketing---agency.html",
+        "https://www.yellowpages.vn/cls/373705/phan-mem-quan-tri.html",
+        "https://www.yellowpages.vn/cls/493201/phan-mem---dich-vu-gia-cong-phan-mem.html",
     ],
 }
 
 # ══════════════════════════════════════════════════════════════════
-#  NGUỒN 1: masothue.com
-#  URL: /Search/?q={keyword_khong_dau}
-#  Company page: /{mst}-{slug}
-#  Website: trong bảng thông tin công ty
+#  STEP 1: Lấy /lgs/ links từ category page
 # ══════════════════════════════════════════════════════════════════
-def get_masothue_company_urls(keyword, pages=2):
-    """Lấy list URL trang công ty từ kết quả search masothue."""
-    company_urls = []
-    for page in range(1, pages + 1):
-        url = f"https://masothue.com/Search/?q={requests.utils.quote(keyword)}&page={page}"
-        r = fetch(url)
-        if not r:
-            break
-        soup = BeautifulSoup(r.text, "html.parser")
-        # Pattern URL: /{10-13 chữ số}-{slug}
-        seen_mst = set()
-        for a in soup.select("a[href]"):
-            href = a.get("href", "")
-            if re.match(r"^/\d{8,13}-", href):
-                # Dedup theo MST (số đầu trong slug)
-                mst = re.match(r"^/(\d{8,13})-", href)
-                if mst and mst.group(1) not in seen_mst:
-                    seen_mst.add(mst.group(1))
-                    full = "https://masothue.com" + href
-                    company_urls.append(full)
-        time.sleep(random.uniform(0.8, 1.5))
-    return company_urls
+def get_lgs_links(category_url, max_pages=5):
+    """
+    Crawl category page, lấy tất cả /lgs/ links (trang công ty).
+    Paginate qua các trang tiếp theo.
+    """
+    lgs_links = []
+    base = "https://www.yellowpages.vn"
 
-def get_website_from_masothue_page(company_url):
-    """Vào trang công ty, lấy website thật."""
-    r = fetch(company_url)
-    if not r:
-        return ""
-    soup = BeautifulSoup(r.text, "html.parser")
-    # Website nằm trong <td> hoặc <a> có href bắt đầu http, không phải masothue
-    SKIP = ["masothue.com","google.com","facebook.com","zalo.me",
-             "youtube.com","twitter.com","instagram.com","tiktok.com",
-             "linkedin.com","apple.com","microsoft.com"]
-    for a in soup.select("a[href^='http']"):
-        href = a.get("href", "")
-        if len(href) > 10 and not any(s in href for s in SKIP):
-            return href.split("?")[0].rstrip("/")
-    return ""
-
-# ══════════════════════════════════════════════════════════════════
-#  NGUỒN 2: yellowpages.vn
-#  URL: /srch/{keyword_underscore}.html
-#  Cần tìm link website công ty trong listing
-# ══════════════════════════════════════════════════════════════════
-def get_yellowpages_websites(keyword, pages=3):
-    """Lấy website từ yellowpages.vn listing."""
-    websites = []
-    slug = keyword.replace(" ", "_")
-    for page in range(1, pages + 1):
+    for page in range(1, max_pages + 1):
         if page == 1:
-            url = f"https://www.yellowpages.vn/srch/{requests.utils.quote(slug)}.html"
+            url = category_url
         else:
-            url = f"https://www.yellowpages.vn/srch/{requests.utils.quote(slug)}-p{page}.html"
+            # Yellowpages paginate: thêm ?page=N hoặc -pN trước .html
+            if "?" in category_url:
+                url = category_url + f"&page={page}"
+            else:
+                url = category_url.replace(".html", f"-p{page}.html")
+
         r = fetch(url)
         if not r:
             break
+
         soup = BeautifulSoup(r.text, "html.parser")
-        # Tìm link website trong listing — thường là a[href] external không phải YP
+
+        found = 0
         for a in soup.select("a[href]"):
             href = a.get("href", "")
-            # Lấy link .vn hoặc link có "vn" trong domain
-            if (href.startswith("http") and
-                "yellowpages.vn" not in href and
-                "yellowpages.com.vn" not in href and
-                "adalhome" not in href and
-                len(href) > 12):
-                dom = get_domain(href)
-                # Ưu tiên .vn domain
-                if dom.endswith(".vn"):
-                    websites.append(href.split("?")[0].rstrip("/"))
-        time.sleep(random.uniform(1.0, 2.0))
-    return list(dict.fromkeys(websites))  # dedup giữ order
+            if "/lgs/" in href:
+                full = base + href if href.startswith("/") else href
+                if full not in lgs_links:
+                    lgs_links.append(full)
+                    found += 1
+
+        if found == 0:
+            break  # Hết trang
+
+        time.sleep(random.uniform(0.8, 1.5))
+
+    return lgs_links
 
 # ══════════════════════════════════════════════════════════════════
-#  NGUỒN 3: Bing — query không dấu + site:.vn
+#  STEP 2: Lấy website thật từ trang /lgs/ công ty
 # ══════════════════════════════════════════════════════════════════
-BING_QUERIES = {
-    "manufacturing": [
-        "cong ty san xuat site:.vn lien he email",
-        "nha may san xuat viet nam site:.vn contact",
-    ],
-    "logistics": [
-        "cong ty logistics site:.vn lien he email",
-        "van tai kho van viet nam site:.vn contact",
-    ],
-    "hospitality": [
-        "khach san resort site:.vn lien he email",
-        "nha hang du lich viet nam site:.vn contact",
-    ],
-    "healthcare": [
-        "phong kham tu nhan site:.vn lien he email",
-        "cong ty duoc pham viet nam site:.vn contact",
-    ],
-    "realestate": [
-        "cong ty bat dong san site:.vn lien he email",
-        "cong ty xay dung viet nam site:.vn contact",
-    ],
-    "finance": [
-        "cong ty tai chinh site:.vn lien he email",
-        "cong ty bao hiem ke toan site:.vn contact",
-    ],
-    "retail": [
-        "chuoi ban le site:.vn lien he email",
-        "cong ty phan phoi viet nam site:.vn contact",
-    ],
-    "education": [
-        "trung tam dao tao site:.vn lien he email",
-        "truong tu thuc viet nam site:.vn contact",
-    ],
-    "it": [
-        "cong ty phan mem site:.vn lien he email",
-        "cong ty outsourcing viet nam site:.vn contact",
-    ],
+SKIP_DOMAINS_EXTRACT = {
+    "yellowpages.vn", "yellowpages.com.vn",
+    "google.com", "facebook.com", "zalo.me",
+    "youtube.com", "twitter.com", "instagram.com",
+    "tiktok.com", "linkedin.com", "apple.com",
+    "microsoft.com", "maps.google.com",
 }
 
-def crawl_bing(query):
-    """Crawl Bing, chỉ lấy .vn domain."""
-    urls = []
-    import urllib.parse
-    for page in range(3):
-        r = fetch(
-            f"https://www.bing.com/search"
-            f"?q={urllib.parse.quote(query)}&first={page*10+1}&count=10"
-        )
-        if not r:
+def get_website_from_lgs(lgs_url):
+    """Vào trang /lgs/ công ty, lấy website thật."""
+    r = fetch(lgs_url)
+    if not r:
+        return "", ""
+
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    # Website thường nằm trong text hiển thị dạng "www.domain.vn"
+    # hoặc link external
+    website = ""
+    company_name = ""
+
+    # Lấy tên công ty
+    h1 = soup.find("h1")
+    if h1:
+        company_name = h1.get_text(strip=True)
+
+    # Tìm website link — external, không phải social
+    for a in soup.select("a[href]"):
+        href = a.get("href", "")
+        if not href.startswith("http"):
+            continue
+        dom = get_domain(href)
+        if dom and dom not in SKIP_DOMAINS_EXTRACT and len(dom) > 4:
+            website = href.split("?")[0].rstrip("/")
             break
-        soup = BeautifulSoup(r.text, "html.parser")
-        for a in soup.select("li.b_algo h2 a"):
-            href = a.get("href", "")
-            if href.startswith("http") and "bing.com" not in href:
-                dom = get_domain(href)
-                if dom.endswith(".vn"):
-                    urls.append(href.split("?")[0].rstrip("/"))
-        time.sleep(random.uniform(2.0, 3.5))
-    return urls
+
+    # Fallback: tìm text dạng www.xxx.vn
+    if not website:
+        text = soup.get_text()
+        match = re.search(r'(?:www\.)?([a-z0-9\-]+\.(?:com\.vn|vn|net|org))', text, re.I)
+        if match:
+            website = "https://" + match.group(0).lower()
+
+    return website, company_name
 
 # ══════════════════════════════════════════════════════════════════
-#  CRAWL 1 WEBSITE → lead dict
+#  STEP 3: Crawl website → extract contact
 # ══════════════════════════════════════════════════════════════════
-SKIP_DOMAINS = {
-    "masothue.com","yellowpages.vn","yellowpages.com.vn",
-    "google.com","facebook.com","linkedin.com","youtube.com",
+SKIP_FINAL = {
+    "trangvangvietnam.com","signup.trangvangvietnam.com",
     "tiki.vn","shopee.vn","lazada.vn","sendo.vn",
     "thegioididong.com","fptshop.com.vn","dienmayxanh.com",
     "vnexpress.net","tuoitre.vn","thanhnien.vn","dantri.com.vn",
-    "wikipedia.org","wikihow.com","dictionary.com",
+    "wikipedia.org","youtube.com","facebook.com",
     "topcv.vn","itviec.com","vietnamworks.com","vieclam24h.vn",
+    "adalhome.vn","duongthanhtienphat.bizz.vn",
 }
 
-def crawl_website(url, industry):
+def crawl_website(url, industry, company_name=""):
     try:
         domain = get_domain(url)
-        if not domain or domain in SKIP_DOMAINS:
+        if not domain or domain in SKIP_FINAL:
             return None
 
         keep, _ = filter_url(url)
@@ -279,6 +270,14 @@ def crawl_website(url, industry):
                 if len(t) > 60:
                     desc = t[:300]
                     break
+        # Fix encoding lỗi
+        try:
+            desc = desc.encode("latin-1").decode("utf-8")
+        except:
+            pass
+        # Reject nếu description vẫn còn ký tự lỗi
+        if desc.count("á»") > 2 or desc.count("Ã") > 2:
+            desc = ""
 
         keep, _ = validate_description(desc)
         if not keep:
@@ -292,25 +291,25 @@ def crawl_website(url, industry):
         if not emails and not phones:
             return None
 
+        # Reject email trangvangvietnam
+        if emails and all("trangvangvietnam" in e or e in ["email@congty.vn","info@congty.vn"] for e in emails):
+            return None
+
         # VN check
-        is_vn = domain.endswith(".vn")
+        is_vn = domain.endswith(".vn") or ".vn." in domain
         has_vn_phone = bool(phones)
         if not is_vn and not has_vn_phone:
             return None
 
-        if not is_vn and has_vn_phone:
-            FOREIGN = ["từ điển","dictionary","tutorial","encyclopedia","định nghĩa"]
-            if any(s in desc.lower() for s in FOREIGN):
-                return None
-
         return {
-            "website":     url,
-            "emails":      ", ".join(emails[:5]),
-            "phones":      ", ".join(phones[:3]),
-            "field":       field,
-            "description": desc,
-            "industry":    industry,
-            "session":     SESSION_TS,
+            "website":      url,
+            "company_name": company_name,
+            "emails":       ", ".join(emails[:5]),
+            "phones":       ", ".join(phones[:3]),
+            "field":        field,
+            "description":  desc,
+            "industry":     industry,
+            "session":      SESSION_TS,
         }
     except:
         return None
@@ -327,113 +326,110 @@ def run(industry="all", target=100, max_workers=MAX_WORKERS,
             try: progress_cb(msg=msg)
             except: pass
 
-    industries = list(INDUSTRY_KEYWORDS.keys()) if industry == "all" else [industry]
+    industries = list(YP_CATEGORIES.keys()) if industry == "all" else [industry]
     ind_label  = industry
 
     log(f"\n{'='*55}")
-    log(f"🎯 Lead Crawler v3 | Team Building")
-    log(f"📅 {SESSION_TS} | Industries: {', '.join(industries)}")
+    log(f"🎯 Lead Crawler v4 | yellowpages.vn → website thật")
+    log(f"📅 {SESSION_TS} | {', '.join(industries)}")
     log(f"{'='*55}\n")
 
-    # ── Thu thập URLs ──────────────────────────────────────────
-    all_urls    = []
-    seen_domains = set()
+    # ── PHASE 1: Thu thập /lgs/ links ─────────────────────────
+    log("📋 PHASE 1: Thu thập danh sách công ty từ yellowpages\n")
 
-    def add_url(url):
-        if not url or not url.startswith("http"):
-            return
-        dom = get_domain(url)
-        if dom and dom not in seen_domains and len(dom) > 4:
-            seen_domains.add(dom)
-            all_urls.append((url, ind_label))
+    lgs_queue = []   # list of (lgs_url, industry)
+    seen_lgs  = set()
 
-    # NGUỒN 1: masothue
-    log("📋 PHASE 1A: masothue.com")
     for ind in industries:
-        for kw in INDUSTRY_KEYWORDS.get(ind, [])[:4]:
-            log(f"  [{ind}] {kw}")
-            company_pages = get_masothue_company_urls(kw, pages=2)
-            log(f"    → {len(company_pages)} công ty")
-            for cp in company_pages[:10]:
-                ws = get_website_from_masothue_page(cp)
-                if ws:
-                    add_url(ws)
-                    log(f"    ✅ {ws[:55]}")
-                time.sleep(random.uniform(0.3, 0.7))
+        cats = YP_CATEGORIES.get(ind, [])
+        for cat_url in cats:
+            log(f"  [{ind}] {cat_url.split('/')[-1][:50]}")
+            links = get_lgs_links(cat_url, max_pages=5)
+            new = 0
+            for l in links:
+                if l not in seen_lgs:
+                    seen_lgs.add(l)
+                    lgs_queue.append((l, ind))
+                    new += 1
+            log(f"    → {new} công ty (+{len(lgs_queue)} total)")
             time.sleep(random.uniform(1.0, 2.0))
-    log(f"  → masothue pool: {len(all_urls)} URLs\n")
 
-    # NGUỒN 2: yellowpages
-    log("📋 PHASE 1B: yellowpages.vn")
-    yp_before = len(all_urls)
-    for ind in industries:
-        for kw in INDUSTRY_KEYWORDS.get(ind, [])[:3]:
-            log(f"  [{ind}] {kw}")
-            sites = get_yellowpages_websites(kw, pages=2)
-            for s in sites:
-                add_url(s)
-            if sites:
-                log(f"    +{len(sites)} URLs")
-            time.sleep(random.uniform(1.0, 1.5))
-    log(f"  → yellowpages: +{len(all_urls)-yp_before} URLs\n")
+    log(f"\n✅ Tổng: {len(lgs_queue)} công ty trong queue\n")
 
-    # NGUỒN 3: Bing
-    log("📋 PHASE 1C: Bing site:.vn")
-    bing_before = len(all_urls)
-    for ind in industries:
-        for q in BING_QUERIES.get(ind, [])[:2]:
-            log(f"  {q[:65]}")
-            urls = crawl_bing(q)
-            for u in urls:
-                add_url(u)
-            log(f"    +{len(urls)} .vn URLs")
-    log(f"  → Bing: +{len(all_urls)-bing_before} URLs\n")
-
-    log(f"✅ TOTAL POOL: {len(all_urls)} unique domains\n")
-
-    if not all_urls:
-        log("⚠️  Pool rỗng. Kiểm tra kết nối.")
+    if not lgs_queue:
+        log("⚠️  Không lấy được danh sách công ty. Kiểm tra URL category.")
         return []
 
-    # ── PHASE 2: Crawl từng website ───────────────────────────
-    log(f"🕷️  PHASE 2: CRAWL ({max_workers} threads)\n")
+    # ── PHASE 2: Lấy website từ mỗi /lgs/ page ───────────────
+    log("🔗 PHASE 2: Lấy website từ trang công ty\n")
+
+    website_queue = []  # list of (website_url, industry, company_name)
+    seen_domains  = set()
+
+    for i, (lgs_url, ind) in enumerate(lgs_queue):
+        ws, name = get_website_from_lgs(lgs_url)
+        if ws:
+            dom = get_domain(ws)
+            if dom and dom not in seen_domains and dom not in SKIP_FINAL:
+                seen_domains.add(dom)
+                website_queue.append((ws, ind, name))
+                log(f"  ✅ [{i+1}/{len(lgs_queue)}] {name[:35]} → {ws[:50]}")
+            else:
+                log(f"  ⏭  [{i+1}/{len(lgs_queue)}] dup/skip: {ws[:50]}")
+        else:
+            log(f"  ❌ [{i+1}/{len(lgs_queue)}] no website: {lgs_url[-40:]}")
+
+        time.sleep(random.uniform(0.4, 0.8))
+
+        if len(website_queue) >= target * 2:
+            log(f"  → Đủ {len(website_queue)} websites, dừng phase 2")
+            break
+
+    log(f"\n✅ {len(website_queue)} websites để crawl\n")
+
+    if not website_queue:
+        log("⚠️  Không lấy được website nào.")
+        return []
+
+    # ── PHASE 3: Crawl từng website ───────────────────────────
+    log(f"🕷️  PHASE 3: CRAWL {len(website_queue)} websites ({max_workers} threads)\n")
 
     raw_leads = []
     done      = [0]
     lock      = threading.Lock()
 
     def worker(item):
-        url, ind = item
-        result = crawl_website(url, ind)
+        ws, ind, name = item
+        result = crawl_website(ws, ind, name)
         with lock:
             done[0] += 1
-            bar = f"[{done[0]}/{len(all_urls)}|{len(raw_leads)}↑]"
+            bar = f"[{done[0]}/{len(website_queue)}|{len(raw_leads)}↑]"
             if result:
                 raw_leads.append(result)
-                log(f"  ✅ {bar} {result['field']} | {result.get('emails','')[:30]} | {url[:45]}")
+                log(f"  ✅ {bar} {result['field']} | {result.get('emails','')[:30]} | {ws[:45]}")
             else:
-                log(f"  ❌ {bar} {url[:65]}")
+                log(f"  ❌ {bar} {ws[:65]}")
             if progress_cb:
-                try: progress_cb(done=done[0], total=len(all_urls), leads=len(raw_leads))
+                try: progress_cb(done=done[0], total=len(website_queue), leads=len(raw_leads))
                 except: pass
-        return result
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        list(as_completed({pool.submit(worker, item): item for item in all_urls}))
+        list(as_completed({pool.submit(worker, item): item for item in website_queue}))
 
-    log(f"\n📊 Raw leads: {len(raw_leads)}\n")
+    log(f"\n📊 Raw leads có contact: {len(raw_leads)}\n")
+
     if not raw_leads:
-        log("⚠️  Không có lead nào có contact.")
+        log("⚠️  Không có lead nào có email/phone.")
         return []
 
-    # ── PHASE 3: Enrich ───────────────────────────────────────
+    # ── PHASE 4: Enrich ───────────────────────────────────────
     if not skip_enrich:
-        log(f"🔍 PHASE 3: ENRICH ({len(raw_leads)} leads)\n")
+        log(f"🔍 PHASE 4: ENRICH ({len(raw_leads)} leads)\n")
         from enricher import enrich_all
         raw_leads = enrich_all(raw_leads, max_workers=6)
 
-    # ── PHASE 4: Score ────────────────────────────────────────
-    log("📊 PHASE 4: SCORE\n")
+    # ── PHASE 5: Score ────────────────────────────────────────
+    log("📊 PHASE 5: SCORE\n")
     scored = [score_lead(l) for l in raw_leads]
     before = len(scored)
     scored = [l for l in scored if l.get("grade","D") != "D"]
@@ -446,8 +442,8 @@ def run(industry="all", target=100, max_workers=MAX_WORKERS,
         g = l.get("grade","?"); gc[g] = gc.get(g,0)+1
     log(f"  → {len(scored)} leads (removed {before-len(scored)} Grade D) | {gc}\n")
 
-    # ── PHASE 5: Export ───────────────────────────────────────
-    log("📤 PHASE 5: EXPORT")
+    # ── PHASE 6: Export ───────────────────────────────────────
+    log("📤 PHASE 6: EXPORT")
     export_to_excel(scored, session=SESSION_TS, industry=ind_label)
 
     log(f"\n{'='*55}")
@@ -461,6 +457,6 @@ def run(industry="all", target=100, max_workers=MAX_WORKERS,
 
 if __name__ == "__main__":
     import sys
-    industry = sys.argv[1] if len(sys.argv) > 1 else "all"
+    industry = sys.argv[1] if len(sys.argv) > 1 else "manufacturing"
     target   = int(sys.argv[2]) if len(sys.argv) > 2 else 100
     run(industry=industry, target=target)
