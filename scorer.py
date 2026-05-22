@@ -16,6 +16,8 @@ EMAIL_SCORE_MAP = {
     "info": 1, "admin": 1, "support": 1, "help": 1, "marketing": 2,
     "noreply": -50, "no-reply": -50, "bounce": -50,
     "donotreply": -50, "abuse": -50, "spam": -50,
+    # [PATCH V3] Email báo chí, rác
+    "toasoan": -50, "ads": -50, "quangcao": -50, "lienhequangcao": -50, "phongkinhdoanh": -5,
 }
 
 HIGH_VALUE_FIELDS = {
@@ -95,10 +97,8 @@ def score_lead(lead: dict) -> dict:
         issues.append("personal email only")
 
     # [PATCH] Penalty: domain không phải .vn và không có phone VN
+    # [PATCH V3] Đã chuyển thành Hard Filter (Tầng 5) nên không cần trừ điểm ở đây nữa
     is_vn_domain = ".vn" in website
-    if not is_vn_domain and not valid_phones:
-        score -= 8
-        issues.append("non-VN domain, no VN phone")
 
     # ── Rewards ───────────────────────────────────────────────────────
     if valid_emails:

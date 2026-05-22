@@ -46,6 +46,9 @@ BAD_EMAIL_PREFIXES = {"noreply", "no-reply", "donotreply", "mailer", "bounce"}
 
 # ── Field detection rules ──────────────────────────────────────────────
 FIELD_RULES = [
+    # [PATCH V4] Ưu tiên bắt Hospitality và Logistics
+    (["khách sạn", "resort", "hotel", "du lịch", "tour", "hospitality"], "Hospitality"),
+    (["vận tải", "logistics", "kho bãi", "forwarding", "giao nhận", "supply chain"], "Logistics"),
     (["phần mềm", "software", "lập trình", "coding", "programmer"], "IT Software"),
     (["outsourcing", "offshore", "nearshore", "body leasing"], "IT Outsourcing"),
     (
@@ -139,7 +142,11 @@ def fetch_page(url: str) -> str | None:
             verify=False,
         )
         if res.status_code == 200:
-            return res.text
+            # [PATCH V4] Sửa lỗi encoding
+            res.encoding = 'utf-8'
+            text = res.text
+            text = text.encode('utf-8', errors='ignore').decode('utf-8')
+            return text
     except Exception:
         pass
     return None

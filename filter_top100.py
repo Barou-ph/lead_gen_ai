@@ -4,15 +4,16 @@ Chạy: python filter_top100.py
 Output: top100_leads.xlsx
 """
 
-import os, re, sys
+import os, sys
 import pandas as pd
 from urllib.parse import urlparse
+
+# Import từ filter.py (nguồn chân lý) để đồng bộ luật lọc
+from filter import filter_url, is_valid_email, validate_description, is_vietnam_lead
 
 # ── CONFIG ────────────────────────────────────────────────────────────
 INPUT_FILE = "leads_ALL_v1.xlsx"  # hoặc leads_ALL.xlsx
 OUTPUT_FILE = "top100_leads.xlsx"
-MIN_SCORE = 20
-GRADES = {"A", "B"}
 TARGET = 100
 PRIORITY_INDUSTRIES = [
     "hospitality",
@@ -23,61 +24,6 @@ PRIORITY_INDUSTRIES = [
     "healthcare",
 ]
 
-# ── BLACKLISTS (từ tool.py) ───────────────────────────────────────────
-PERSONAL_DOMAINS = {
-    "gmail.com",
-    "yahoo.com",
-    "hotmail.com",
-    "outlook.com",
-    "icloud.com",
-    "mail.com",
-    "protonmail.com",
-    "yandex.com",
-    "live.com",
-    "msn.com",
-    "aol.com",
-}
-NOISE_DOMAINS = {
-    "vnexpress.net",
-    "tuoitre.vn",
-    "thanhnien.vn",
-    "dantri.com.vn",
-    "linkedin.com",
-    "itviec.com",
-    "vietnamworks.com",
-    "topcv.vn",
-    "tiki.vn",
-    "shopee.vn",
-    "lazada.vn",
-    "thegioididong.com",
-    "wikipedia.org",
-    "medium.com",
-    "blogspot.com",
-    "wordpress.com",
-    "crunchbase.com",
-    "clutch.co",
-    "statista.com",
-    "reddit.com",
-}
-BAD_EMAIL_PATTERNS = [
-    r"sentry",
-    r"wixpress",
-    r"bug-report",
-    r"^name@",
-    r"^your@",
-    r"@email\.com$",
-    r"@yourcompany\.com$",
-    r"@example\.com$",
-    r"^test@",
-    r"^demo@",
-    r"@company\.com$",
-    r"@mail\.com$",
-    r"^[a-f0-9]{20,}@",
-    r"@robots\.net$",
-]
-FOREIGN_TLDS = {".fi", ".bd", ".lk", ".pk", ".th", ".cn"}
-
-
 # ── HELPERS ───────────────────────────────────────────────────────────
 def get_domain(url):
     try:
@@ -85,44 +31,11 @@ def get_domain(url):
     except:
         return ""
 
-
-def is_bad_email(email):
-    if not email or "@" not in str(email) or len(str(email)) > 100:
-        return True
-    low = str(email).lower().strip()
-    domain = low.split("@")[-1]
-    prefix = low.split("@")[0]
-    if domain in PERSONAL_DOMAINS:
-        return True
-    for tld in FOREIGN_TLDS:
-        if domain.endswith(tld):
-            return True
-    for pat in BAD_EMAIL_PATTERNS:
-        if re.search(pat, low):
-            return True
-    if len(prefix) > 50:
-        return True
-    return False
-
-
-def email_type(email):
-    if not email or "@" not in str(email):
-        return "none"
-    dom = str(email).split("@")[-1].lower()
-    return "personal" if dom in PERSONAL_DOMAINS else "company"
-
-
-def is_noise_domain(url):
-    dom = get_domain(url)
-    return dom in NOISE_DOMAINS or any(dom.endswith("." + nd) for nd in NOISE_DOMAINS)
-
-
 def get_best_email(row):
     for col in ["best_email", "emails"]:
         if col in row and str(row[col]).strip() not in ("", "nan", "None", "NaN"):
             return str(row[col]).split(",")[0].strip()
     return ""
-
 
 def ind_priority(industry):
     try:
@@ -130,6 +43,15 @@ def ind_priority(industry):
     except:
         return 99
 
+def email_type(email):
+    if not email or "@" not in str(email):
+        return "none"
+    dom = str(email).split("@")[-1].lower()
+    from filter import BAD_EMAIL_DOMAINS
+    # Đánh dấu sơ bộ là personal hay company
+    if dom in {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com"}:
+        return "personal"
+    return "company"
 
 # ── MAIN ──────────────────────────────────────────────────────────────
 def main():
@@ -163,42 +85,35 @@ def main():
     for _, row in df.iterrows():
         d = row.to_dict()
 
-        # Grade check
-        grade = str(d.get("grade", "")).strip().upper()
-        if grade not in GRADES:
-            rejected.append({**d, "_reason": f"grade_{grade or '?'}"})
-            continue
-
-        # Score check
-        try:
-            score = float(d.get("score", 0) or 0)
-        except:
-            score = 0
-        if score < MIN_SCORE:
-            rejected.append({**d, "_reason": f"score_{int(score)}"})
-            continue
-
-        # Website check
+        # 1. Website check
         ws = str(d.get("website", "")).strip()
         if not ws or not ws.startswith("http"):
             rejected.append({**d, "_reason": "no_website"})
             continue
-        if is_noise_domain(ws):
-            rejected.append({**d, "_reason": "noise_domain"})
+            
+        keep, reason = filter_url(ws)
+        if not keep:
+            rejected.append({**d, "_reason": reason})
             continue
 
-        # Email check
+        # 2. Tầng 5 - Vietnam Lead Check (Domain VN hoặc Phone VN)
+        phones = str(d.get("phones", "")).strip()
+        if not is_vietnam_lead(ws, phones):
+            rejected.append({**d, "_reason": "non_vn_lead"})
+            continue
+
+        # 3. Description check
+        desc = str(d.get("description", "")).strip()
+        is_desc_ok, desc_reason = validate_description(desc)
+        if not is_desc_ok:
+            rejected.append({**d, "_reason": desc_reason})
+            continue
+
+        # 4. Email check (Cho phép khuyết email, nhưng nếu có phải là email chuẩn)
         em = get_best_email(d)
-        if not em or is_bad_email(em):
+        if em and not is_valid_email(em):
             rejected.append({**d, "_reason": "bad_email"})
             continue
-
-        # Dedup by email
-        em_low = em.lower()
-        if em_low in seen_emails:
-            rejected.append({**d, "_reason": "dup_email"})
-            continue
-        seen_emails.add(em_low)
 
         # Dedup by domain
         dom = get_domain(ws)
@@ -208,18 +123,35 @@ def main():
         if dom:
             seen_domains.add(dom)
 
+        # Dedup by email (nếu có email)
+        if em:
+            em_low = em.lower()
+            if em_low in seen_emails:
+                rejected.append({**d, "_reason": "dup_email"})
+                continue
+            seen_emails.add(em_low)
+
         # Tag email type
         d["email_type"] = email_type(em)
         d["best_email_clean"] = em
+        
+        try:
+            score = float(d.get("score", 0) or 0)
+        except:
+            score = 0
+            
+        grade = str(d.get("grade", "")).strip().upper()
+
         d["_score_num"] = score
         d["_ind_pri"] = ind_priority(d.get("industry", ""))
         d["_grade_num"] = {"A": 0, "B": 1}.get(grade, 2)
-        d["_em_type_n"] = 0 if d["email_type"] == "company" else 1
+        d["_em_type_n"] = 0 if d["email_type"] == "company" else (1 if d["email_type"] == "personal" else 2)
+        
         passed.append(d)
 
-    print(f"\n✅ Sau filter: {len(passed)} leads | ❌ Rejected: {len(rejected)}")
+    print(f"\n✅ Sau filter cứng: {len(passed)} leads thật | ❌ Rejected: {len(rejected)}")
 
-    # Sort: A > B | company email > personal | score desc | industry priority
+    # Sort: A > B | company email > personal > none | score desc | industry priority
     passed.sort(
         key=lambda x: (
             x["_grade_num"],
@@ -242,19 +174,17 @@ def main():
 
     # ── Stats ──────────────────────────────────────────────────────────
     print(f"\n📊 TOP {len(top)} LEADS:")
-    if "grade" in df_top.columns:
+    if "grade" in df_top.columns and not df_top.empty:
         print(f"   Grade: {df_top['grade'].value_counts().to_dict()}")
-    if "industry" in df_top.columns:
+    if "industry" in df_top.columns and not df_top.empty:
         print(f"   Industry:\n   {df_top['industry'].value_counts().to_dict()}")
-    if "email_type" in df_top.columns:
+    if "email_type" in df_top.columns and not df_top.empty:
         print(f"   Email type: {df_top['email_type'].value_counts().to_dict()}")
 
     reject_reasons = (
-        df_rej["_reason"].value_counts() if "_reason" in df_rej.columns else {}
+        df_rej["_reason"].value_counts() if not df_rej.empty and "_reason" in df_rej.columns else {}
     )
-    print(
-        f"\n❌ Reject reasons: {reject_reasons.to_dict() if not reject_reasons.empty else {}}"
-    )
+    print(f"\n❌ Reject reasons: {reject_reasons.to_dict() if not reject_reasons.empty else {}}")
 
     # ── Xuất Excel đẹp ────────────────────────────────────────────────
     try:
@@ -329,15 +259,15 @@ def main():
             ("", ""),
             ("=== Grade ===", ""),
         ]
-        if "grade" in df_top.columns:
+        if "grade" in df_top.columns and not df_top.empty:
             for g, c in df_top["grade"].value_counts().items():
                 rows_stats.append((f"Grade {g}", c))
         rows_stats += [("", ""), ("=== Industry ===", "")]
-        if "industry" in df_top.columns:
+        if "industry" in df_top.columns and not df_top.empty:
             for ind, c in df_top["industry"].value_counts().items():
                 rows_stats.append((ind, c))
         rows_stats += [("", ""), ("=== Email Type ===", "")]
-        if "email_type" in df_top.columns:
+        if "email_type" in df_top.columns and not df_top.empty:
             for et, c in df_top["email_type"].value_counts().items():
                 rows_stats.append((et, c))
         rows_stats += [("", ""), ("=== Reject Reasons ===", "")]
@@ -361,12 +291,6 @@ def main():
         print(
             f"\n✅ Xuất CSV (cài openpyxl để ra .xlsx): {OUTPUT_FILE.replace('.xlsx','.csv')}"
         )
-
-    print(f"\n📋 Bước tiếp theo:")
-    print(f"   1. Mở {OUTPUT_FILE} — kiểm tra leads")
-    print(f"   2. Upload vào tab Filter của tool.py để gen AI email")
-    print(f"   3. Hoặc chạy: python gen_email_batch.py")
-
 
 if __name__ == "__main__":
     main()

@@ -373,6 +373,63 @@ NOISE_DOMAINS = {
     "tripadvisor.com",
     "booking.com",
     "agoda.com",
+    # [PATCH V3] Thêm Báo chí, Job Board, SaaS nước ngoài
+    "congan.com.vn",
+    "suckhoedoisong.vn",
+    "baochinhphu.vn",
+    "vtv.vn",
+    "cand.com.vn",
+    "hoteljob.vn",
+    "timviec365.vn",
+    "careerbuilder.vn",
+    "glints.com",
+    "smallpdf.com",
+    "moovit.com",
+    # [PATCH V4] Thêm domains rác từ phân tích top 100
+    "sider.ai",
+    "agencyvn.com",
+    "vietnix.vn",
+    "tuyensinh.uel.edu.vn",
+    "jobthai.com",
+    "mobileworld.com.vn",
+    "softvn.vn",
+    "blacksnetwork.net",
+    "bachlongmobile.com",
+    "vietpedia.vn",
+    # Báo chí
+    "thanhnien.com.vn",
+    "tuoitre.vn",
+    "vnexpress.net",
+    "qdnd.vn",
+    "baothanhhoa.vn",
+    "suckhoedoisong.vn",
+    "thesaigontimes.vn",
+    "baosuckhoecongdong.vn",
+    "thuysanvietnam.com.vn",
+    "visabatimes.com.vn",
+    # Yellowpages/trangvang
+    "trangvangvietnam.com",
+    "signup.trangvangvietnam.com",
+    "yellowpages.com.vn",
+    "yellowpages.vn",
+    # Global brands không phải buyer VN
+    "equatorial.com",
+    "smallpdf.com",
+    "icloud.com",
+    "aon.com",
+    "jobthai.com",
+    "sider.ai",
+    "vogue.com",
+    "brides.com",
+    # Job boards
+    "hoteljob.vn",
+    "remotepeople.com",
+    # Từ điển/tutorial
+    "hvdic.thivien.net",
+    "thivien.net",
+    "vietpedia.vn",
+    "dolenglish.vn",
+    "batdongsan.vn",
 }
 
 REJECT_DESC_PHRASES = [
@@ -419,6 +476,13 @@ REJECT_DESC_PHRASES = [
     "mục lục",
     "fintech là gì",
     "1. fintech",
+    # [PATCH V3] Thêm từ khóa tin tức báo chí
+    "tin tức",
+    "báo điện tử",
+    "toà soạn",
+    "tổng biên tập",
+    "chuyên trang tin tức",
+    "giấy phép mạng xã hội",
 ]
 
 BAD_EMAIL_PATTERNS = [
@@ -454,6 +518,12 @@ BAD_EMAIL_PATTERNS = [
     r"@eventsnewsasia",
     r"@dealstreetasia",
     r"@businessnewsasia",
+    # [PATCH V3] Bad email prefixes
+    r"^toasoan@",
+    r"^ads@",
+    r"^dev@",
+    r"^chimaivir@",
+    r"^bvmtw@",
     r"@lhdfirm\.com$",
     r"bridgewest\.developer@",
     r"musarurwaregis@gmail",
@@ -589,11 +659,25 @@ def _reject_reason(d, cfg):
     website = str(d.get("website", "")).strip()
     if not website or not website.startswith("http"):
         return "no_website"
+
+    # [PATCH V3] Tầng 5 - Reject Foreign domain without VN phone
+    from filter import is_vietnam_lead
+
+    if not is_vietnam_lead(website, str(d.get("phones", ""))):
+        return "non_vn_lead"
+
     if cfg["require_email"]:
         em = str(d.get("best_email", "") or d.get("emails", "") or "").strip()
         first = em.split(",")[0].strip() if em else ""
         if not first or _is_bad_email(first):
             return "bad_email"
+
+        # [PATCH V4] Email mismatch check
+        from filter import email_matches_website
+
+        if first and not email_matches_website(first, website):
+            return "email_mismatch"
+
     if cfg["require_phone"]:
         if not _has_value(d.get("phones", "")):
             return "no_phone"

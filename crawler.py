@@ -255,7 +255,10 @@ def crawl_website(url, industry, company_name=""):
         if not r:
             return None
 
-        soup = BeautifulSoup(r.text, "html.parser")
+        # [PATCH V4] Fix encoding triệt để trước khi parse
+        r.encoding = 'utf-8'
+        html_text = r.text.encode('utf-8', errors='ignore').decode('utf-8')
+        soup = BeautifulSoup(html_text, "html.parser")
 
         # Description
         desc = ""

@@ -100,6 +100,14 @@ BLACKLIST = {
     "daraz.pk","flipkart.com","snapdeal.com","meesho.com",
     "lonelyplanet.com","tripadvisor.com","booking.com","agoda.com",
     "adventuresofjellie.com","marketresearch.com",
+    # [PATCH V3] Thêm Báo chí, Job Board, SaaS nước ngoài
+    "congan.com.vn","suckhoedoisong.vn","baochinhphu.vn","vtv.vn","cand.com.vn",
+    "hoteljob.vn","timviec365.vn","careerbuilder.vn","glints.com",
+    "smallpdf.com","moovit.com",
+    # [PATCH V4] Thêm domains rác từ phân tích top 100
+    "sider.ai", "agencyvn.com", "vietnix.vn", "tuyensinh.uel.edu.vn",
+    "jobthai.com", "mobileworld.com.vn", "softvn.vn", "blacksnetwork.net",
+    "bachlongmobile.com", "vietpedia.vn",
 }
 
 # ══════════════════════════════════════════════════════════════════════
@@ -186,6 +194,8 @@ REJECT_DESC_PHRASES = [
     "scholarship","tuition","admissions",
     "mutual fund","fund performance","nav history","stock exchange",
     "personal loan calculator","loan eligibility",
+    # [PATCH V3] Thêm từ khóa tin tức báo chí
+    "tin tức","báo điện tử","toà soạn","tổng biên tập","chuyên trang tin tức","giấy phép mạng xã hội",
 ]
 
 ACCEPT_DESC_PHRASES = [
@@ -322,6 +332,8 @@ BAD_EMAIL_RE = [
     r"^--",
     r"@tradepassglobal",r"@asiapevc",r"@eventsnewsasia",
     r"@dealstreetasia",r"@businessnewsasia",
+    # [PATCH V3] Bad email prefixes
+    r"^toasoan@",r"^ads@",r"^dev@",r"^chimaivir@",r"^bvmtw@",
     # [PATCH] Email Trung Quốc / số / fake phổ biến
     r"@sohu\.com$",
     r"@qq\.com$",
@@ -382,6 +394,28 @@ def clean_emails(emails) -> list:
     if isinstance(emails, str):
         emails = [e.strip() for e in emails.split(",") if e.strip()]
     return [e for e in emails if is_valid_email(e)]
+
+def email_matches_website(email: str, website: str) -> bool:
+    """
+    Kiểm tra xem email domain có khớp với website domain không.
+    Bỏ qua nếu email là personal (gmail, yahoo...).
+    """
+    if not email or "@" not in email or not website:
+        return True
+        
+    email_domain = email.split("@")[-1].lower()
+    try:
+        from urllib.parse import urlparse
+        site_domain = urlparse(website).netloc.lower().replace("www.", "")
+    except:
+        return True
+        
+    personal_domains = {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com"}
+    if email_domain in personal_domains:
+        return True
+        
+    # Match nếu domain này chứa domain kia
+    return email_domain in site_domain or site_domain in email_domain
 
 def is_valid_vn_phone(phone: str) -> bool:
     cleaned = re.sub(r"[^\d+]", "", phone)
