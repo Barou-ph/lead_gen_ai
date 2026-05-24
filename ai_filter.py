@@ -1,11 +1,5 @@
 """
-ai_filter.py — Dùng GPT-4o-mini để filter lead phù hợp cold email team building.
-
-Cách dùng:
-  - Gọi từ tool.py trong apply_filter() sau rule-based filter
-  - Hoặc chạy độc lập: python ai_filter.py leads_ALL.xlsx
-
-Output: thêm cột 'ai_should_contact', 'ai_reason' vào DataFrame
+ai_filter.py v2 — Prompt chặt hơn, batch nhỏ hơn, reject cụ thể hơn.
 """
 
 import os, json, time, re
@@ -26,47 +20,74 @@ if _api_key:
         print(f"⚠️  OpenAI error: {e}")
 
 MODEL = "gpt-4o-mini"
-BATCH_SIZE = 10  # 10 leads/call — tiết kiệm hơn ai_analyst.py
+BATCH_SIZE = 5  # Nhỏ hơn để GPT đọc kỹ hơn
 
-SYSTEM_PROMPT = """Bạn là chuyên gia sales B2B dịch vụ team building tại Việt Nam.
+SYSTEM_PROMPT = """Bạn là chuyên gia sales B2B dịch vụ TEAM BUILDING tại Việt Nam.
+Nhiệm vụ: Quyết định có nên gửi cold email pitch dịch vụ team building cho công ty này không.
 
-Nhiệm vụ: Đọc thông tin từng công ty và quyết định có nên gửi cold email pitch dịch vụ team building không.
+REJECT (should_contact = false) nếu thuộc bất kỳ nhóm nào sau:
+1. Báo chí / truyền thông / tạp chí (vnexpress, tuoitre, qdnd, suckhoedoisong,...)
+2. Website từ điển / tutorial / blog cá nhân
+3. Global brand không hoạt động tại VN (equatorial.com, aon.com, smallpdf,...)
+4. Công ty nước ngoài không có nhân sự VN (description tiếng nước ngoài, email nước ngoài)
+5. Freelancer / 1-2 người / không có văn phòng rõ ràng
+6. Email là placeholder: trangvangvietnam, yellowpages, congty.vn, yoursite.com, webdemo.com, domain.com
+7. Công ty quá nhỏ trong ngành không có nhu cầu team building (hộ kinh doanh hóa chất, cơ khí 5-10 người)
+8. Website đang bảo trì / lỗi / không có nội dung
 
-Tiêu chí NÊN liên hệ (should_contact = true):
-- Là công ty VN đang hoạt động thật sự (có website, mô tả rõ ràng)
-- Có đội ngũ nhân viên (không phải 1-2 người)
-- Ngành có nhu cầu team building: logistics, hospitality, manufacturing, healthcare, finance, realestate, retail, education, IT
-- Email là địa chỉ công ty (không phải gmail cá nhân random)
+PASS (should_contact = true) nếu:
+- Công ty VN thật, đang hoạt động, có đội ngũ nhân viên (>20 người ước tính)
+- Ngành phù hợp: khách sạn, resort, logistics, manufacturing (nhà máy lớn), bệnh viện, giáo dục doanh nghiệp, bất động sản, tài chính, bán lẻ chuỗi
+- Email là địa chỉ công ty thật (không phải gmail cá nhân random, không phải placeholder)
 
-Tiêu chí KHÔNG nên liên hệ (should_contact = false):
-- Báo chí, truyền thông, tạp chí
-- Website từ điển, tutorial, blog
-- Global brand (không phải buyer VN)
-- Công ty 1-2 người, freelancer
-- Không có mô tả rõ ràng hoặc mô tả lỗi encoding
-- Email là placeholder (trangvangvietnam, yellowpages, congty.vn)
+Ví dụ REJECT:
+- equatorial.com → global brand
+- trangvangvietnam.com → placeholder
+- baothanhhoa.vn → báo chí
+- cokhiphuluong.com (5 nhân viên, cơ khí nhỏ) → quá nhỏ
 
-Trả về JSON array, mỗi item:
+Ví dụ PASS:
+- pearlriverhotel.vn (khách sạn, CEO email) → PASS
+- datviettour.com.vn (du lịch team building) → PASS
+- baovan.com.vn (logistics 10+ năm) → PASS
+- trieuphuloc.com.vn (nội thất xuất khẩu, sales email) → PASS
+
+Trả về JSON array ĐÚNG FORMAT, mỗi item:
 {
-  "website": "...",
-  "should_contact": true/false,
-  "reason": "1 câu ngắn lý do"
+  "website": "domain.com",
+  "should_contact": true,
+  "reason": "1 câu cụ thể: lý do pass hoặc lý do reject"
 }
 
-Chỉ trả về JSON array thuần, không có text khác."""
+CHỈ trả về JSON array, không có text khác, không có markdown."""
 
 
 def _build_prompt(leads: list) -> str:
-    lines = ["Đánh giá các công ty sau:\n"]
+    lines = [
+        "Đánh giá các công ty sau (quyết định có nên gửi cold email team building không):\n"
+    ]
     for i, lead in enumerate(leads, 1):
-        desc = (lead.get("description") or "")[:100]
+        desc = (lead.get("description") or "")[:150]
+        # Fix encoding nếu lỗi
+        try:
+            desc = desc.encode("latin-1").decode("utf-8")
+        except:
+            pass
+        if desc.count("á»") > 2 or desc.count("Ã") > 2:
+            desc = "[description lỗi encoding]"
+
         email = lead.get("best_email") or lead.get("emails", "")
         if email:
             email = str(email).split(",")[0].strip()
+
+        size = lead.get("size_estimate", "unknown")
+        hiring = lead.get("is_hiring", False)
+
         lines.append(
             f"{i}. website={lead.get('website', '')} "
             f"| industry={lead.get('industry', '')} "
-            f"| field={lead.get('field', '')} "
+            f"| size={size} "
+            f"| hiring={hiring} "
             f"| email={email} "
             f"| desc={desc}"
         )
@@ -74,11 +95,7 @@ def _build_prompt(leads: list) -> str:
 
 
 def ai_filter_batch(leads: list) -> list:
-    """
-    Nhận list lead dicts, trả về list với 'ai_should_contact' và 'ai_reason'.
-    """
     if not client:
-        # Không có API key → pass all
         for lead in leads:
             lead["ai_should_contact"] = True
             lead["ai_reason"] = "AI skip (no key)"
@@ -89,27 +106,40 @@ def ai_filter_batch(leads: list) -> list:
     try:
         resp = client.chat.completions.create(
             model=MODEL,
-            max_tokens=800,
-            temperature=0.2,  # thấp để ổn định, không sáng tạo
+            max_tokens=600,
+            temperature=0.1,  # Rất thấp để ổn định
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": _build_prompt(leads)},
             ],
         )
         raw = resp.choices[0].message.content.strip()
-
-        # Parse JSON
         raw = re.sub(r"```json|```", "", raw).strip()
         parsed = json.loads(raw)
 
         for item in parsed:
             ws = item.get("website", "")
-            if ws in results:
-                results[ws]["ai_should_contact"] = item.get("should_contact", True)
-                results[ws]["ai_reason"] = item.get("reason", "")
+            # Match linh hoạt — bỏ http/https/www
+            ws_clean = (
+                ws.replace("https://", "")
+                .replace("http://", "")
+                .replace("www.", "")
+                .rstrip("/")
+            )
+            for key in results:
+                key_clean = (
+                    key.replace("https://", "")
+                    .replace("http://", "")
+                    .replace("www.", "")
+                    .rstrip("/")
+                )
+                if ws_clean in key_clean or key_clean in ws_clean:
+                    results[key]["ai_should_contact"] = item.get("should_contact", True)
+                    results[key]["ai_reason"] = item.get("reason", "")
+                    break
 
     except json.JSONDecodeError as e:
-        print(f"  ⚠️  JSON parse error: {e}")
+        print(f"  ⚠️  JSON parse error: {e} | raw: {raw[:200]}")
         for lead in leads:
             lead.setdefault("ai_should_contact", True)
             lead.setdefault("ai_reason", "parse error")
@@ -119,7 +149,6 @@ def ai_filter_batch(leads: list) -> list:
             lead.setdefault("ai_should_contact", True)
             lead.setdefault("ai_reason", f"error: {e}")
 
-    # Fallback cho lead chưa được update
     for lead in leads:
         lead.setdefault("ai_should_contact", True)
         lead.setdefault("ai_reason", "not evaluated")
@@ -128,39 +157,44 @@ def ai_filter_batch(leads: list) -> list:
 
 
 def ai_filter_all(leads: list, progress_cb=None) -> tuple:
-    """
-    Filter toàn bộ leads theo batch.
-    Trả về (passed, rejected) — 2 list.
-    """
     if not leads:
         return [], []
 
     total = len(leads)
-    print(f"\n🤖 AI Filter: {total} leads | batch={BATCH_SIZE} | model={MODEL}\n")
+    print(f"\n🤖 AI Filter v2: {total} leads | batch={BATCH_SIZE} | model={MODEL}\n")
 
-    # Chạy theo batch
     for i in range(0, total, BATCH_SIZE):
         batch = leads[i : i + BATCH_SIZE]
+        n = i // BATCH_SIZE + 1
+        total_batches = (total - 1) // BATCH_SIZE + 1
         print(
-            f"  Batch {i//BATCH_SIZE + 1}/{(total-1)//BATCH_SIZE + 1} ({len(batch)} leads)...",
-            end=" ",
+            f"  Batch {n}/{total_batches} ({len(batch)} leads)...", end=" ", flush=True
         )
         ai_filter_batch(batch)
-        print("✅")
+        passed_so_far = sum(
+            1 for l in leads[: i + BATCH_SIZE] if l.get("ai_should_contact", True)
+        )
+        rejected_so_far = i + len(batch) - passed_so_far
+        print(f"✅ (running: pass={passed_so_far}, reject={rejected_so_far})")
         if progress_cb:
             progress_cb(done=min(i + BATCH_SIZE, total), total=total)
         if i + BATCH_SIZE < total:
-            time.sleep(0.5)  # tránh rate limit
+            time.sleep(0.3)
 
-    # Tách passed / rejected
     passed = [l for l in leads if l.get("ai_should_contact", True)]
     rejected = [l for l in leads if not l.get("ai_should_contact", True)]
 
     print(f"\n  ✅ Pass: {len(passed)} | ❌ Reject: {len(rejected)}\n")
+
+    # In summary reject reasons
+    if rejected:
+        print("  Reject reasons:")
+        for l in rejected[:10]:
+            print(f"    - {l.get('website','')}: {l.get('ai_reason','')}")
+
     return passed, rejected
 
 
-# ── Chạy độc lập ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import sys
     import pandas as pd
@@ -177,12 +211,12 @@ if __name__ == "__main__":
 
     passed, rejected = ai_filter_all(leads)
 
-    # Export
     out = input_file.replace(".xlsx", "_ai_filtered.xlsx")
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
         pd.DataFrame(passed).to_excel(writer, sheet_name="✅ Pass", index=False)
         pd.DataFrame(rejected).to_excel(writer, sheet_name="❌ Rejected", index=False)
 
-    print(f"📤 Xuất: {out}")
+    print(f"\n📤 Xuất: {out}")
     print(f"   ✅ {len(passed)} leads nên liên hệ")
     print(f"   ❌ {len(rejected)} leads bị loại")
+    print(f"   💰 Tỷ lệ reject: {len(rejected)/len(leads)*100:.1f}%")

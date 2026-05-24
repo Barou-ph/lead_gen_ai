@@ -24,6 +24,13 @@ PRIORITY_INDUSTRIES = [
     "healthcare",
 ]
 
+# Reject nếu website trong blacklist cứng
+BAD_SITES = {"equatorial.com", "anami.vn"}
+
+# Reject nếu email là placeholder
+BAD_EMAILS = {"contact@yellowpages.com.vn", "domain-support@vnnic.vn"}
+
+
 # ── HELPERS ───────────────────────────────────────────────────────────
 def get_domain(url):
     try:
@@ -31,11 +38,13 @@ def get_domain(url):
     except:
         return ""
 
+
 def get_best_email(row):
     for col in ["best_email", "emails"]:
         if col in row and str(row[col]).strip() not in ("", "nan", "None", "NaN"):
             return str(row[col]).split(",")[0].strip()
     return ""
+
 
 def ind_priority(industry):
     try:
@@ -43,15 +52,18 @@ def ind_priority(industry):
     except:
         return 99
 
+
 def email_type(email):
     if not email or "@" not in str(email):
         return "none"
     dom = str(email).split("@")[-1].lower()
     from filter import BAD_EMAIL_DOMAINS
+
     # Đánh dấu sơ bộ là personal hay company
     if dom in {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com"}:
         return "personal"
     return "company"
+
 
 # ── MAIN ──────────────────────────────────────────────────────────────
 def main():
@@ -90,7 +102,12 @@ def main():
         if not ws or not ws.startswith("http"):
             rejected.append({**d, "_reason": "no_website"})
             continue
-            
+
+        # Kiểm tra website trong blacklist cứng
+        if get_domain(ws) in BAD_SITES:
+            rejected.append({**d, "_reason": "bad_site_blacklist"})
+            continue
+
         keep, reason = filter_url(ws)
         if not keep:
             rejected.append({**d, "_reason": reason})
@@ -104,6 +121,11 @@ def main():
 
         # 3. Description check
         desc = str(d.get("description", "")).strip()
+        # Reject nếu description lỗi encoding
+        if desc.count("á»") > 2:
+            rejected.append({**d, "_reason": "desc_encoding_error"})
+            continue
+
         is_desc_ok, desc_reason = validate_description(desc)
         if not is_desc_ok:
             rejected.append({**d, "_reason": desc_reason})
@@ -113,6 +135,11 @@ def main():
         em = get_best_email(d)
         if em and not is_valid_email(em):
             rejected.append({**d, "_reason": "bad_email"})
+            continue
+
+        # Kiểm tra email placeholder
+        if em and em.lower() in BAD_EMAILS:
+            rejected.append({**d, "_reason": "placeholder_email"})
             continue
 
         # Dedup by domain
@@ -134,22 +161,28 @@ def main():
         # Tag email type
         d["email_type"] = email_type(em)
         d["best_email_clean"] = em
-        
+
         try:
             score = float(d.get("score", 0) or 0)
         except:
             score = 0
-            
+
         grade = str(d.get("grade", "")).strip().upper()
 
         d["_score_num"] = score
         d["_ind_pri"] = ind_priority(d.get("industry", ""))
         d["_grade_num"] = {"A": 0, "B": 1}.get(grade, 2)
-        d["_em_type_n"] = 0 if d["email_type"] == "company" else (1 if d["email_type"] == "personal" else 2)
-        
+        d["_em_type_n"] = (
+            0
+            if d["email_type"] == "company"
+            else (1 if d["email_type"] == "personal" else 2)
+        )
+
         passed.append(d)
 
-    print(f"\n✅ Sau filter cứng: {len(passed)} leads thật | ❌ Rejected: {len(rejected)}")
+    print(
+        f"\n✅ Sau filter cứng: {len(passed)} leads thật | ❌ Rejected: {len(rejected)}"
+    )
 
     # Sort: A > B | company email > personal > none | score desc | industry priority
     passed.sort(
@@ -182,9 +215,13 @@ def main():
         print(f"   Email type: {df_top['email_type'].value_counts().to_dict()}")
 
     reject_reasons = (
-        df_rej["_reason"].value_counts() if not df_rej.empty and "_reason" in df_rej.columns else {}
+        df_rej["_reason"].value_counts()
+        if not df_rej.empty and "_reason" in df_rej.columns
+        else {}
     )
-    print(f"\n❌ Reject reasons: {reject_reasons.to_dict() if not reject_reasons.empty else {}}")
+    print(
+        f"\n❌ Reject reasons: {reject_reasons.to_dict() if not reject_reasons.empty else {}}"
+    )
 
     # ── Xuất Excel đẹp ────────────────────────────────────────────────
     try:
@@ -291,6 +328,7 @@ def main():
         print(
             f"\n✅ Xuất CSV (cài openpyxl để ra .xlsx): {OUTPUT_FILE.replace('.xlsx','.csv')}"
         )
+
 
 if __name__ == "__main__":
     main()
